@@ -23,6 +23,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include "nordic_common.h"
 #include "nrf.h"
 #include "nrf51_bitfields.h"
@@ -39,6 +40,8 @@
 #include "ble_debug_assert_handler.h"
 #include "epb_MmBp.h"
 #include "wechat.h"
+#include "mfrc522.h"
+#include "nrf_delay.h"
 
 #define WAKEUP_BUTTON_PIN               BUTTON_0                                    /**< Button used to wake up the application. */
 
@@ -81,7 +84,7 @@ static uint16_t                         m_conn_handle = BLE_CONN_HANDLE_INVALID;
 static ble_nus_t                        m_nus;                                      /**< Structure to identify the Nordic UART Service. */
 ble_gap_addr_t mac_addr;
 static bool                                  m_bps_meas_ind_conf_pending = false;   
-
+uint32_t *p_spi_base_address;
 /**@brief     Error handler function, which is called when an error has occurred.
  *
  * @warning   This handler is an example only and does not fit a final product. You need to analyze
@@ -106,6 +109,13 @@ void app_error_handler(uint32_t error_code, uint32_t line_num, const uint8_t * p
     NVIC_SystemReset();
 }
 
+int fputc(int ch, FILE *f)
+{
+
+simple_uart_put((uint8_t)ch);
+
+return ch;
+}
 
 /**@brief       Assert macro callback function.
  *
@@ -132,6 +142,8 @@ static void leds_init(void)
 {
     nrf_gpio_cfg_output(ADVERTISING_LED_PIN_NO);
     nrf_gpio_cfg_output(CONNECTED_LED_PIN_NO);
+	
+		nrf_gpio_cfg_output(SPI_RST);
 }
 
 
@@ -613,7 +625,45 @@ void UART0_IRQHandler(void)
 
     /**@snippet [Handling the data received over UART] */
 }
+/***************MainCirCleTask*************************/
+uint8_t CT[2]; //卡类型
+uint8_t SN[4]; //卡号
+uint8_t Card_KEY[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }; //{0x11,0x11,0x11,0x11,0x11,0x11};   //密码
+uint8_t Card_Data[16];
 
+void MainCircleTask(void)
+{      
+	uint8_t status2,i;
+  status2=PcdRequest(0x52,CT);//寻卡,输出为卡类型
+  if(status2==MI_OK) //寻卡成功
+  {
+    simple_uart_putstring("寻卡成功\r\n");
+    status2 = PcdAnticoll(SN);  //防冲撞处理，输出卡片序列号，4字节--第0扇区第0块前4个字节是UID（序列号）
+  }
+  if(status2==MI_OK) //防冲撞成功
+  {
+    simple_uart_putstring("防冲撞成功\r\n");
+			//输出ID号
+    simple_uart_putstring("卡号:");
+    for(i=0;i<4;i++)
+    {
+//      simple_uart_putstring("%X ",SN[i]);
+    }
+    simple_uart_putstring("\r\n");
+    status2 = PcdSelect(SN);  //选卡
+			
+  }
+  if(status2==MI_OK) //选卡成功
+  {
+    simple_uart_putstring("选卡成功\r\n");
+    status2 = PcdAuthState(0x60, 5, Card_KEY, SN);//验证卡
+  }
+  if(status2==MI_OK) //验证卡成功
+  {
+    simple_uart_putstring("验证卡成功\r\n");
+  }else
+		simple_uart_putstring("fail\r\n");
+}
 
 /**@brief  Application main function.
  */
@@ -624,16 +674,26 @@ int main(void)
     timers_init();
     buttons_init();
     uart_init();
+		//p_spi_base_address = spi_master_init(SPI0, SPI_MODE3, false);
     ble_stack_init();
     gap_params_init();
     services_init();
     advertising_init();
     conn_params_init();
     sec_params_init();
-    
+    nrf_gpio_cfg_output(SPI_PSELSCK0);
+		nrf_gpio_cfg_output(SPI_PSELMOSI0);
+		nrf_gpio_cfg_input(SPI_PSELMISO0, NRF_GPIO_PIN_NOPULL);
+		nrf_gpio_cfg_output(SPI_PSELSS0);
     simple_uart_putstring(START_STRING);
+	
+		printf("uart init successfully\r\n");
     
     advertising_start();
+	
+		MFRC522_Init();
+		simple_uart_putstring("init successfully\r\n");
+		MainCircleTask();	
     
     // Enter main loop
     for (;;)
